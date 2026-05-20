@@ -1,6 +1,11 @@
 buildpack:
   name: Blazar-Buildpack-Java
 
+before:
+  - description: Fetch Git LFS runtime resources
+    commands:
+      - git lfs pull --include="core/src/main/resources/python/stdlib.zip,core/src/main/resources/python/bin/boomslang.wasm"
+
 depends:
   - name: cpython
 
