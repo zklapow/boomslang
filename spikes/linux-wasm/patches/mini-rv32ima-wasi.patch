@@ -1,0 +1,50 @@
+--- a/mini-rv32ima/mini-rv32ima.c
++++ b/mini-rv32ima/mini-rv32ima.c
+@@ -304,8 +304,47 @@ static int ReadKBByte()
+ 			default: return r;
+ 		}
+ 	}
++}
++
++#elif defined(__wasi__)
++
++#include <time.h>
++#include <unistd.h>
++
++static void CaptureKeyboardInput()
++{
++}
++
++static void ResetKeyboardInput()
++{
++}
++
++static void MiniSleep()
++{
++}
++
++static uint64_t GetTimeMicroseconds()
++{
++	return ((uint64_t)clock() * 1000000ULL) / CLOCKS_PER_SEC;
+ }
+ 
++static int is_eofd;
++
++static int ReadKBByte()
++{
++	if( is_eofd ) return 0xffffffff;
++	char rxchar = 0;
++	int rread = read(0, (char*)&rxchar, 1);
++	if( rread > 0 ) return rxchar;
++	if( rread == 0 ) is_eofd = 1;
++	return -1;
++}
++
++static int IsKBHit()
++{
++	return 0;
++}
++
+ #else
+ 
+ #include <sys/ioctl.h>
