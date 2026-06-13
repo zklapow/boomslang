@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.IdentityHashMap;
@@ -45,6 +46,7 @@ public final class JoelLinuxChicoryProbe {
   private final String cmdline;
   private final int initialMemoryPages;
   private final byte[] stdinBytes;
+  private final SecureRandom random = new SecureRandom();
   private final Object schedulerLock = new Object();
   private final Map<Long, Runner> runnersByTask = new LinkedHashMap<>();
   private final IdentityHashMap<Instance, Runner> runnersByInstance = new IdentityHashMap<>();
@@ -207,6 +209,7 @@ public final class JoelLinuxChicoryProbe {
       case "wasm_cpu_clock_get_monotonic" -> new long[] {
         Instant.now().toEpochMilli() * 1_000_000L,
       };
+      case "wasm_random_get_bytes" -> randomGetBytes(instance.memory(), args);
       case "wasm_driver_hvc_put" -> hvcPut(instance.memory(), args);
       case "wasm_driver_hvc_get" -> hvcGet(instance.memory(), args);
       case "wasm_dump_stacktrace" -> dumpStackTrace(instance.memory(), args);
@@ -238,6 +241,21 @@ public final class JoelLinuxChicoryProbe {
     byte[] bytes = memory.readBytes(buffer, count);
     System.out.print(new String(bytes, StandardCharsets.UTF_8));
     System.out.flush();
+    return new long[] { count };
+  }
+
+  private long[] randomGetBytes(Memory memory, long[] args) {
+    int buffer = Math.toIntExact(args[0]);
+    int count = Math.toIntExact(args[1]);
+    if (count < 0 || count > 0x10000) {
+      note("wasm_random_get_bytes", "rejecting count=" + count);
+      return new long[] { -1 };
+    }
+
+    byte[] bytes = new byte[count];
+    random.nextBytes(bytes);
+    memory.write(buffer, bytes);
+    note("wasm_random_get_bytes", "wrote " + count + " byte(s)");
     return new long[] { count };
   }
 
@@ -334,15 +352,15 @@ public final class JoelLinuxChicoryProbe {
   private long[] startCpu(long[] args) {
     long cpu = args[0];
     long idleTask = args[1];
-    long startStack = args[2];
+    long startArg = args.length > 2 ? args[2] : idleTask;
     note(
       "wasm_start_cpu",
       "cpu=" +
       cpu +
       " idle_task=0x" +
       Long.toHexString(idleTask) +
-      " start_stack=0x" +
-      Long.toHexString(startStack)
+      " start_arg=0x" +
+      Long.toHexString(startArg)
     );
     Runner runner = registerRunner(
       "CPU " + cpu + " [boot+idle]",
@@ -350,7 +368,7 @@ public final class JoelLinuxChicoryProbe {
       instantiateVmlinux()
     );
     Thread thread = new Thread(
-      () -> runSecondaryCpu(runner, startStack),
+      () -> runSecondaryCpu(runner, startArg),
       "joel-chicory-cpu-" + cpu
     );
     thread.start();
