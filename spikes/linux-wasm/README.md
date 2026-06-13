@@ -152,6 +152,25 @@ nix develop -c timeout 60s ./spikes/linux-wasm/scripts/run-joel-chicory.sh \
   --stdin-text "$(printf 'echo chicory-linux-ok\nuname -a\n')"
 ```
 
+The JMH benchmarks for Linux/Wasm scripted boot live in
+`benchmarks/src/main/java/com/hubspot/boomslang/benchmarks/LinuxWasmScriptBenchmark.java`.
+After packaging the benchmark jar, the default artifact paths work if
+`fetch-joel-demo` has populated `spikes/linux-wasm/build/joel-demo`:
+
+```bash
+mvn -pl benchmarks -am -DskipTests package
+java -jar benchmarks/target/benchmarks.jar LinuxWasmScriptBenchmark
+```
+
+For out-of-tree or source-built artifacts, prefer environment variables because
+JMH forks benchmark JVMs:
+
+```bash
+LINUX_WASM_BENCH_WASM=/path/to/vmlinux.stripped.wasm \
+LINUX_WASM_BENCH_INITRD=/path/to/initramfs.cpio.gz \
+java -jar benchmarks/target/benchmarks.jar LinuxWasmScriptBenchmark.bootAndEcho
+```
+
 ## Verification so far
 
 Done locally:

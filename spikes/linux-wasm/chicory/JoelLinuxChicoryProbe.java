@@ -46,8 +46,10 @@ public final class JoelLinuxChicoryProbe {
   private final String cmdline;
   private final int initialMemoryPages;
   private final byte[] stdinBytes;
+  private final String exitOnOutput;
   private final SecureRandom random = new SecureRandom();
   private final Object schedulerLock = new Object();
+  private final StringBuilder consoleOutput = new StringBuilder();
   private final Map<Long, Runner> runnersByTask = new LinkedHashMap<>();
   private final IdentityHashMap<Instance, Runner> runnersByInstance = new IdentityHashMap<>();
   private final Path executableDumpDir = Path.of(
@@ -66,6 +68,7 @@ public final class JoelLinuxChicoryProbe {
     this.cmdline = args.cmdline;
     this.initialMemoryPages = args.initialMemoryPages;
     this.stdinBytes = args.stdinText.getBytes(StandardCharsets.UTF_8);
+    this.exitOnOutput = args.exitOnOutput;
   }
 
   public static void main(String[] argv) throws Exception {
@@ -239,9 +242,28 @@ public final class JoelLinuxChicoryProbe {
     int buffer = Math.toIntExact(args[0]);
     int count = Math.toIntExact(args[1]);
     byte[] bytes = memory.readBytes(buffer, count);
-    System.out.print(new String(bytes, StandardCharsets.UTF_8));
+    String text = new String(bytes, StandardCharsets.UTF_8);
+    System.out.print(text);
     System.out.flush();
+    maybeExitOnOutput(text);
     return new long[] { count };
+  }
+
+  private void maybeExitOnOutput(String text) {
+    if (exitOnOutput.isEmpty()) {
+      return;
+    }
+
+    synchronized (consoleOutput) {
+      consoleOutput.append(text);
+      if (consoleOutput.indexOf(exitOnOutput) >= 0) {
+        log("exit_on_output matched: " + exitOnOutput);
+        System.exit(0);
+      }
+      if (consoleOutput.length() > 1_000_000) {
+        consoleOutput.delete(0, consoleOutput.length() - exitOnOutput.length());
+      }
+    }
   }
 
   private long[] randomGetBytes(Memory memory, long[] args) {
@@ -840,6 +862,7 @@ public final class JoelLinuxChicoryProbe {
       "maxcpus=1 nohz_full=0 root=/dev/ram0 rootfstype=ramfs init=/init console=hvc console=ttyS0";
     private int initialMemoryPages = 30;
     private String stdinText = "";
+    private String exitOnOutput = "";
 
     private static Args parse(String[] argv) {
       Args args = new Args();
@@ -851,6 +874,8 @@ public final class JoelLinuxChicoryProbe {
           case "--memory-pages" -> args.initialMemoryPages =
             Integer.parseInt(requireValue(argv, ++i, "--memory-pages"));
           case "--stdin-text" -> args.stdinText = requireValue(argv, ++i, "--stdin-text");
+          case "--exit-on-output" -> args.exitOnOutput =
+            requireValue(argv, ++i, "--exit-on-output");
           case "--help" -> {
             usage();
             System.exit(0);
@@ -884,7 +909,9 @@ public final class JoelLinuxChicoryProbe {
         "  --initrd PATH        initramfs.cpio.gz path",
         "  --cmdline TEXT       Linux boot command line",
         "  --memory-pages N     initial imported memory pages, default 30",
-        "  --stdin-text TEXT    bytes returned by the hvc console input callback"
+        "  --stdin-text TEXT    bytes returned by the hvc console input callback",
+        "  --exit-on-output TEXT",
+        "                       exit successfully after this console text appears"
       );
     }
   }
