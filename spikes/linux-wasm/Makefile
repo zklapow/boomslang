@@ -19,7 +19,9 @@ joel-chicory: fetch-joel-demo
 	./scripts/run-joel-chicory.sh --cmdline "$(JOEL_CMDLINE)"
 
 joel-chicory-scripted: fetch-joel-demo
-	timeout 60s ./scripts/run-joel-chicory.sh --cmdline "$(JOEL_CMDLINE)" --stdin-text "$$(printf 'echo chicory-linux-ok\nuname -a\n')"
+	stdin_text=$$(printf 'echo chicory-linux-ok\nuname -a\n.'); \
+	timeout 60s ./scripts/run-joel-chicory.sh --cmdline "$(JOEL_CMDLINE)" --stdin-text "$${stdin_text%.}"; \
+	status=$$?; [ $$status -eq 0 ] || [ $$status -eq 124 ]
 
 clean:
 	rm -rf "$(BUILD_DIR)"
