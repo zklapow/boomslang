@@ -20,6 +20,7 @@ import org.openjdk.jmh.annotations.Level;
 import org.openjdk.jmh.annotations.Measurement;
 import org.openjdk.jmh.annotations.Mode;
 import org.openjdk.jmh.annotations.OutputTimeUnit;
+import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
@@ -57,6 +58,15 @@ public class LinuxWasmScriptBenchmark {
   private String childClasspath;
   private Duration timeout;
 
+  @Param({ "interpreter" })
+  public String engine;
+
+  @Param({ "warn" })
+  public String compilerFallback;
+
+  @Param({ "com.hubspot.boomslang.benchmarks.compiled.JoelLinuxWasmMachine" })
+  public String aotMachineClass;
+
   @Setup(Level.Trial)
   public void setup() throws IOException {
     repoRoot = findRepoRoot();
@@ -64,6 +74,13 @@ public class LinuxWasmScriptBenchmark {
     initrdPath = findInitrdPath(repoRoot);
     javaBin = Path.of(System.getProperty("java.home"), "bin", javaExecutableName());
     timeout = Duration.ofSeconds(configuredTimeoutSeconds());
+    String configuredAotMachineClass = configuredValue(
+      "linux.wasm.bench.aotMachineClass",
+      "LINUX_WASM_BENCH_AOT_MACHINE_CLASS"
+    );
+    if (configuredAotMachineClass != null) {
+      aotMachineClass = configuredAotMachineClass;
+    }
     childClasspath = compileProbe(repoRoot);
   }
 
@@ -133,6 +150,12 @@ public class LinuxWasmScriptBenchmark {
     command.add(stdin);
     command.add("--exit-on-output");
     command.add(marker);
+    command.add("--engine");
+    command.add(engine);
+    command.add("--compiler-fallback");
+    command.add(compilerFallback);
+    command.add("--aot-machine-class");
+    command.add(aotMachineClass);
 
     Process process = new ProcessBuilder(command)
       .directory(repoRoot.toFile())
@@ -297,6 +320,7 @@ public class LinuxWasmScriptBenchmark {
     addForkedJvmProperty(properties, "linux.wasm.bench.wasm");
     addForkedJvmProperty(properties, "linux.wasm.bench.initrd");
     addForkedJvmProperty(properties, "linux.wasm.bench.timeoutSeconds");
+    addForkedJvmProperty(properties, "linux.wasm.bench.aotMachineClass");
     return properties.toArray(String[]::new);
   }
 

@@ -54,6 +54,11 @@
         <artifactId>wasm</artifactId>
         <version>${dep.chicory.version}</version>
       </dependency>
+      <dependency>
+        <groupId>com.dylibso.chicory</groupId>
+        <artifactId>compiler</artifactId>
+        <version>${dep.chicory.version}</version>
+      </dependency>
 
       <!-- Jimfs (in-memory filesystem) -->
       <dependency>

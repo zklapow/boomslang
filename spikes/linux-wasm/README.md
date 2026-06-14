@@ -162,6 +162,18 @@ mvn -pl benchmarks -am -DskipTests package
 java -jar benchmarks/target/benchmarks.jar LinuxWasmScriptBenchmark
 ```
 
+To benchmark a Maven-plugin-style AOT kernel machine, build the benchmark module
+with the Linux/Wasm AOT profile and run the JMH parameter with `engine=aot`:
+
+```bash
+mvn -pl benchmarks -am -DskipTests -Dlinux.wasm.aot=true package
+java -jar benchmarks/target/benchmarks.jar LinuxWasmScriptBenchmark.bootAndEcho -p engine=aot
+```
+
+This currently AOT-compiles `vmlinux` only. BusyBox/user executables are loaded
+from the initramfs at guest runtime, so they remain interpreted unless separately
+dumped, pinned, and compiled.
+
 For out-of-tree or source-built artifacts, prefer environment variables because
 JMH forks benchmark JVMs:
 

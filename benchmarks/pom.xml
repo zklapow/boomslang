@@ -13,6 +13,10 @@
 
   <dependencies>
     <dependency>
+      <groupId>com.dylibso.chicory</groupId>
+      <artifactId>compiler</artifactId>
+    </dependency>
+    <dependency>
       <groupId>com.google.jimfs</groupId>
       <artifactId>jimfs</artifactId>
     </dependency>
@@ -68,5 +72,44 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <profile>
+      <id>linux-wasm-aot</id>
+      <activation>
+        <property>
+          <name>linux.wasm.aot</name>
+        </property>
+      </activation>
+      <properties>
+        <linux.wasm.aot.wasmFile>${project.basedir}/../spikes/linux-wasm/build/joel-demo/vmlinux.stripped.wasm</linux.wasm.aot.wasmFile>
+        <linux.wasm.aot.className>com.hubspot.boomslang.benchmarks.compiled.JoelLinuxWasm</linux.wasm.aot.className>
+      </properties>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>com.dylibso.chicory</groupId>
+            <artifactId>chicory-compiler-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>compile-linux-wasm</id>
+                <goals>
+                  <goal>compile</goal>
+                </goals>
+                <configuration>
+                  <wasmFile>${linux.wasm.aot.wasmFile}</wasmFile>
+                  <name>${linux.wasm.aot.className}</name>
+                  <interpreterFallback>WARN</interpreterFallback>
+                  <targetSourceFolder>${project.build.directory}/generated-sources/annotations</targetSourceFolder>
+                  <targetClassFolder>${project.build.outputDirectory}</targetClassFolder>
+                  <targetWasmFolder>${project.build.outputDirectory}</targetWasmFolder>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 
 </project>

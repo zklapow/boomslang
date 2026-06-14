@@ -1,3 +1,5 @@
+import com.dylibso.chicory.compiler.InterpreterFallback;
+import com.dylibso.chicory.compiler.MachineFactoryCompiler;
 import com.dylibso.chicory.runtime.ByteArrayMemory;
 import com.dylibso.chicory.runtime.GlobalInstance;
 import com.dylibso.chicory.runtime.HostFunction;
@@ -6,6 +8,7 @@ import com.dylibso.chicory.runtime.ImportTable;
 import com.dylibso.chicory.runtime.ImportValues;
 import com.dylibso.chicory.runtime.ImportMemory;
 import com.dylibso.chicory.runtime.Instance;
+import com.dylibso.chicory.runtime.Machine;
 import com.dylibso.chicory.runtime.Memory;
 import com.dylibso.chicory.runtime.Store;
 import com.dylibso.chicory.runtime.TableInstance;
@@ -32,7 +35,9 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.function.Function;
 
 public final class JoelLinuxChicoryProbe {
 
@@ -47,17 +52,22 @@ public final class JoelLinuxChicoryProbe {
   private final int initialMemoryPages;
   private final byte[] stdinBytes;
   private final String exitOnOutput;
+  private final Engine engine;
+  private final InterpreterFallback compilerFallback;
+  private final String aotMachineClass;
   private final SecureRandom random = new SecureRandom();
   private final Object schedulerLock = new Object();
   private final StringBuilder consoleOutput = new StringBuilder();
   private final Map<Long, Runner> runnersByTask = new LinkedHashMap<>();
   private final IdentityHashMap<Instance, Runner> runnersByInstance = new IdentityHashMap<>();
+  private final Map<String, Function<Instance, Machine>> machineFactoriesByDigest = new LinkedHashMap<>();
   private final Path executableDumpDir = Path.of(
     "spikes/linux-wasm/build/joel-demo/user-executables"
   );
   private WasmModule module;
   private ImportValues importValues;
   private Memory memory;
+  private Function<Instance, Machine> vmlinuxMachineFactory;
   private RuntimeException fatalFailure;
   private int executableDumpCount;
   private int stdinOffset;
@@ -69,6 +79,9 @@ public final class JoelLinuxChicoryProbe {
     this.initialMemoryPages = args.initialMemoryPages;
     this.stdinBytes = args.stdinText.getBytes(StandardCharsets.UTF_8);
     this.exitOnOutput = args.exitOnOutput;
+    this.engine = args.engine;
+    this.compilerFallback = args.compilerFallback;
+    this.aotMachineClass = args.aotMachineClass;
   }
 
   public static void main(String[] argv) throws Exception {
@@ -80,6 +93,7 @@ public final class JoelLinuxChicoryProbe {
     log("wasm=" + wasmPath);
     log("initrd=" + initrdPath);
     log("cmdline=\"" + cmdline + "\"");
+    log("engine=" + engine.name().toLowerCase(Locale.ROOT));
 
     module = Parser.parse(wasmPath);
     log(
@@ -90,6 +104,7 @@ public final class JoelLinuxChicoryProbe {
       " types=" +
       module.typeSection().typeCount()
     );
+    vmlinuxMachineFactory = machineFactoryFor("vmlinux", module, true);
 
     Store store = new Store();
     int functionImports = 0;
@@ -162,11 +177,85 @@ public final class JoelLinuxChicoryProbe {
   }
 
   private Instance instantiateVmlinux() {
-    return Instance
+    Instance.Builder builder = Instance
       .builder(module)
       .withImportValues(importValues)
-      .withStart(false)
-      .build();
+      .withStart(false);
+    if (vmlinuxMachineFactory != null) {
+      builder.withMachineFactory(vmlinuxMachineFactory);
+    }
+    return builder.build();
+  }
+
+  private Function<Instance, Machine> machineFactoryFor(
+    String label,
+    WasmModule wasmModule,
+    boolean kernelModule
+  ) {
+    if (engine == Engine.INTERPRETER) {
+      return null;
+    }
+    if (engine == Engine.AOT) {
+      if (!kernelModule) {
+        return null;
+      }
+      return loadAotMachineFactory();
+    }
+
+    String digest = wasmModule.digest();
+    if (digest != null) {
+      Function<Instance, Machine> cached = machineFactoriesByDigest.get(digest);
+      if (cached != null) {
+        return cached;
+      }
+    }
+
+    long start = System.nanoTime();
+    Function<Instance, Machine> factory = MachineFactoryCompiler
+      .builder(wasmModule)
+      .withInterpreterFallback(compilerFallback)
+      .compile();
+    long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+    log(
+      "compiled " +
+      label +
+      " functions=" +
+      wasmModule.functionSection().functionCount() +
+      " fallback=" +
+      compilerFallback.name().toLowerCase(Locale.ROOT) +
+      " in " +
+      elapsedMillis +
+      "ms"
+    );
+
+    if (digest != null) {
+      machineFactoriesByDigest.put(digest, factory);
+    }
+    return factory;
+  }
+
+  private Function<Instance, Machine> loadAotMachineFactory() {
+    try {
+      Class<?> aotClass = Class.forName(aotMachineClass);
+      var constructor = aotClass.getConstructor(Instance.class);
+      log("loaded AOT machine class " + aotMachineClass);
+      return instance -> {
+        try {
+          return (Machine) constructor.newInstance(instance);
+        } catch (ReflectiveOperationException e) {
+          throw new RuntimeException("Failed to create AOT machine " + aotMachineClass, e);
+        }
+      };
+    } catch (ClassNotFoundException e) {
+      throw new IllegalStateException(
+        "AOT machine class not found: " +
+        aotMachineClass +
+        ". Build benchmarks with -Dlinux.wasm.aot=true first.",
+        e
+      );
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalStateException("Failed to load AOT machine class " + aotMachineClass, e);
+    }
   }
 
   private void patchBootInputs(Instance instance) throws IOException {
@@ -611,11 +700,17 @@ public final class JoelLinuxChicoryProbe {
         Math.toIntExact(executable.binEnd - executable.binStart)
       );
       WasmModule userModule = Parser.parse(executableBytes);
+      Function<Instance, Machine> userMachineFactory = machineFactoryFor(
+        "user " + runner.name,
+        userModule,
+        false
+      );
       Instance userInstance = instantiateUserExecutable(
         runner,
         userModule,
         executable,
-        shouldCallCloneCallback
+        shouldCallCloneCallback,
+        userMachineFactory
       );
 
       try {
@@ -647,7 +742,8 @@ public final class JoelLinuxChicoryProbe {
     Runner runner,
     WasmModule userModule,
     Executable executable,
-    boolean shouldCallCloneCallback
+    boolean shouldCallCloneCallback,
+    Function<Instance, Machine> userMachineFactory
   ) {
     Store userStore = new Store();
     long stackPointer = runner.instance.export("get_user_stack_pointer").apply()[0];
@@ -699,11 +795,14 @@ public final class JoelLinuxChicoryProbe {
       shouldCallCloneCallback
     );
 
-    return Instance
+    Instance.Builder builder = Instance
       .builder(userModule)
       .withImportValues(userStore.toImportValues())
-      .withStart(false)
-      .build();
+      .withStart(false);
+    if (userMachineFactory != null) {
+      builder.withMachineFactory(userMachineFactory);
+    }
+    return builder.build();
   }
 
   private GlobalInstance userGlobal(
@@ -850,6 +949,28 @@ public final class JoelLinuxChicoryProbe {
     }
   }
 
+  private enum Engine {
+    INTERPRETER,
+    RUNTIME_COMPILER,
+    AOT;
+
+    private static Engine parse(String value) {
+      if ("compiler".equalsIgnoreCase(value)) {
+        return RUNTIME_COMPILER;
+      }
+      try {
+        return Engine.valueOf(value.toUpperCase(Locale.ROOT).replace('-', '_'));
+      } catch (IllegalArgumentException e) {
+        throw new IllegalArgumentException(
+          "Unsupported engine " +
+          value +
+          ", expected interpreter, runtime-compiler, compiler, or aot",
+          e
+        );
+      }
+    }
+  }
+
   private static final class Args {
 
     private Path wasmPath = Path.of(
@@ -863,6 +984,10 @@ public final class JoelLinuxChicoryProbe {
     private int initialMemoryPages = 30;
     private String stdinText = "";
     private String exitOnOutput = "";
+    private Engine engine = Engine.INTERPRETER;
+    private InterpreterFallback compilerFallback = InterpreterFallback.WARN;
+    private String aotMachineClass =
+      "com.hubspot.boomslang.benchmarks.compiled.JoelLinuxWasmMachine";
 
     private static Args parse(String[] argv) {
       Args args = new Args();
@@ -876,6 +1001,11 @@ public final class JoelLinuxChicoryProbe {
           case "--stdin-text" -> args.stdinText = requireValue(argv, ++i, "--stdin-text");
           case "--exit-on-output" -> args.exitOnOutput =
             requireValue(argv, ++i, "--exit-on-output");
+          case "--engine" -> args.engine = Engine.parse(requireValue(argv, ++i, "--engine"));
+          case "--compiler-fallback" -> args.compilerFallback =
+            parseCompilerFallback(requireValue(argv, ++i, "--compiler-fallback"));
+          case "--aot-machine-class" -> args.aotMachineClass =
+            requireValue(argv, ++i, "--aot-machine-class");
           case "--help" -> {
             usage();
             System.exit(0);
@@ -886,6 +1016,17 @@ public final class JoelLinuxChicoryProbe {
         }
       }
       return args;
+    }
+
+    private static InterpreterFallback parseCompilerFallback(String value) {
+      try {
+        return InterpreterFallback.valueOf(value.toUpperCase(Locale.ROOT).replace('-', '_'));
+      } catch (IllegalArgumentException e) {
+        throw new IllegalArgumentException(
+          "Unsupported compiler fallback " + value + ", expected silent, warn, or fail",
+          e
+        );
+      }
     }
 
     private static String requireValue(String[] argv, int index, String flag) {
@@ -911,7 +1052,12 @@ public final class JoelLinuxChicoryProbe {
         "  --memory-pages N     initial imported memory pages, default 30",
         "  --stdin-text TEXT    bytes returned by the hvc console input callback",
         "  --exit-on-output TEXT",
-        "                       exit successfully after this console text appears"
+        "                       exit successfully after this console text appears",
+        "  --engine NAME        interpreter, runtime-compiler, or aot, default interpreter",
+        "  --compiler-fallback NAME",
+        "                       silent, warn, or fail, default warn",
+        "  --aot-machine-class NAME",
+        "                       generated vmlinux Machine class for --engine aot"
       );
     }
   }
