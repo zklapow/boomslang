@@ -49,6 +49,9 @@ public class LinuxWasmScriptBenchmark {
 
   private static final String BENCHMARK_CMDLINE =
     "maxcpus=1 nohz_full=0 root=/dev/ram0 rootfstype=ramfs init=/init console=hvc console=ttyS0";
+  private static final String AOT_ENGINE = "aot";
+  private static final String JOEL_USER_WASM_SHA256 =
+    "3d0d16c37d4581390f58f29854419607b21aef216794ee5bea2278914544cf1d";
   private static final AtomicInteger MARKER_COUNTER = new AtomicInteger();
 
   private Path repoRoot;
@@ -64,19 +67,6 @@ public class LinuxWasmScriptBenchmark {
   @Param({ "warn" })
   public String compilerFallback;
 
-  @Param({ "com.hubspot.boomslang.benchmarks.compiled.JoelLinuxWasmMachine" })
-  public String aotMachineClass;
-
-  @Param({ "" })
-  public String aotUserModuleClasses;
-
-  @Param(
-    {
-      "3d0d16c37d4581390f58f29854419607b21aef216794ee5bea2278914544cf1d=com.hubspot.boomslang.benchmarks.compiled.JoelUserWasm",
-    }
-  )
-  public String aotUserModuleSha256Classes;
-
   @Setup(Level.Trial)
   public void setup() throws IOException {
     repoRoot = findRepoRoot();
@@ -84,28 +74,7 @@ public class LinuxWasmScriptBenchmark {
     initrdPath = findInitrdPath(repoRoot);
     javaBin = Path.of(System.getProperty("java.home"), "bin", javaExecutableName());
     timeout = Duration.ofSeconds(configuredTimeoutSeconds());
-    String configuredAotMachineClass = configuredValue(
-      "linux.wasm.bench.aotMachineClass",
-      "LINUX_WASM_BENCH_AOT_MACHINE_CLASS"
-    );
-    if (configuredAotMachineClass != null) {
-      aotMachineClass = configuredAotMachineClass;
-    }
-    String configuredAotUserModuleClasses = configuredValue(
-      "linux.wasm.bench.aotUserModuleClasses",
-      "LINUX_WASM_BENCH_AOT_USER_MODULE_CLASSES"
-    );
-    if (configuredAotUserModuleClasses != null) {
-      aotUserModuleClasses = configuredAotUserModuleClasses;
-    }
-    String configuredAotUserModuleSha256Classes = configuredValue(
-      "linux.wasm.bench.aotUserModuleSha256Classes",
-      "LINUX_WASM_BENCH_AOT_USER_MODULE_SHA256_CLASSES"
-    );
-    if (configuredAotUserModuleSha256Classes != null) {
-      aotUserModuleSha256Classes = configuredAotUserModuleSha256Classes;
-    }
-    childClasspath = compileProbe(repoRoot);
+    childClasspath = compileProbe(repoRoot, engine);
   }
 
   @Benchmark
@@ -178,12 +147,6 @@ public class LinuxWasmScriptBenchmark {
     command.add(engine);
     command.add("--compiler-fallback");
     command.add(compilerFallback);
-    command.add("--aot-machine-class");
-    command.add(aotMachineClass);
-    command.add("--aot-user-module-classes");
-    command.add(aotUserModuleClasses);
-    command.add("--aot-user-module-sha256-classes");
-    command.add(aotUserModuleSha256Classes);
 
     Process process = new ProcessBuilder(command)
       .directory(repoRoot.toFile())
@@ -228,10 +191,16 @@ public class LinuxWasmScriptBenchmark {
     return text;
   }
 
-  private static String compileProbe(Path repoRoot) throws IOException {
+  private static String compileProbe(Path repoRoot, String engine) throws IOException {
     Path source = repoRoot.resolve("spikes/linux-wasm/chicory/JoelLinuxChicoryProbe.java");
     Path classes = repoRoot.resolve("benchmarks/target/linux-wasm-chicory-classes");
+    Path staticAotSource = classes.resolve("JoelLinuxStaticAotModules.java");
     Files.createDirectories(classes);
+    Files.writeString(
+      staticAotSource,
+      staticAotModulesSource(engine),
+      StandardCharsets.UTF_8
+    );
 
     JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
     if (compiler == null) {
@@ -250,7 +219,8 @@ public class LinuxWasmScriptBenchmark {
       classpath,
       "-d",
       classes.toString(),
-      source.toString()
+      source.toString(),
+      staticAotSource.toString()
     );
     if (result != 0) {
       throw new IllegalStateException(
@@ -259,6 +229,59 @@ public class LinuxWasmScriptBenchmark {
     }
 
     return classes + File.pathSeparator + classpath;
+  }
+
+  private static String staticAotModulesSource(String engine) {
+    if (AOT_ENGINE.equalsIgnoreCase(engine)) {
+      return """
+      import com.dylibso.chicory.runtime.Instance;
+      import com.dylibso.chicory.runtime.Machine;
+      import com.hubspot.boomslang.benchmarks.compiled.JoelLinuxWasmMachine;
+      import com.hubspot.boomslang.benchmarks.compiled.JoelUserWasm;
+      import java.util.Map;
+      import java.util.function.Function;
+
+      final class JoelLinuxStaticAotModules {
+
+        private JoelLinuxStaticAotModules() {}
+
+        static Function<Instance, Machine> vmlinuxMachineFactory() {
+          return JoelLinuxWasmMachine::new;
+        }
+
+        static Map<String, JoelLinuxLinkedUserModule> userModulesBySha256() {
+          JoelUserWasm userModule = new JoelUserWasm();
+          return Map.of(
+            "%s",
+            new JoelLinuxLinkedUserModule(
+              userModule.wasmModule(),
+              userModule.machineFactory()
+            )
+          );
+        }
+      }
+      """.formatted(JOEL_USER_WASM_SHA256);
+    }
+
+    return """
+    import com.dylibso.chicory.runtime.Instance;
+    import com.dylibso.chicory.runtime.Machine;
+    import java.util.Map;
+    import java.util.function.Function;
+
+    final class JoelLinuxStaticAotModules {
+
+      private JoelLinuxStaticAotModules() {}
+
+      static Function<Instance, Machine> vmlinuxMachineFactory() {
+        return null;
+      }
+
+      static Map<String, JoelLinuxLinkedUserModule> userModulesBySha256() {
+        return Map.of();
+      }
+    }
+    """;
   }
 
   private static Path findRepoRoot() {
@@ -348,9 +371,6 @@ public class LinuxWasmScriptBenchmark {
     addForkedJvmProperty(properties, "linux.wasm.bench.wasm");
     addForkedJvmProperty(properties, "linux.wasm.bench.initrd");
     addForkedJvmProperty(properties, "linux.wasm.bench.timeoutSeconds");
-    addForkedJvmProperty(properties, "linux.wasm.bench.aotMachineClass");
-    addForkedJvmProperty(properties, "linux.wasm.bench.aotUserModuleClasses");
-    addForkedJvmProperty(properties, "linux.wasm.bench.aotUserModuleSha256Classes");
     return properties.toArray(String[]::new);
   }
 
