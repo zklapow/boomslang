@@ -170,9 +170,12 @@ mvn -pl benchmarks -am -DskipTests -Dlinux.wasm.aot=true package
 java -jar benchmarks/target/benchmarks.jar LinuxWasmScriptBenchmark.bootAndEcho -p engine=aot
 ```
 
-This currently AOT-compiles `vmlinux` only. BusyBox/user executables are loaded
-from the initramfs at guest runtime, so they remain interpreted unless separately
-dumped, pinned, and compiled.
+The default profile AOT-compiles `vmlinux` plus the single distinct BusyBox/user
+module dumped by the probe at
+`spikes/linux-wasm/build/joel-demo/user-executables/01-task_swapper_0_0x2b3a80_.wasm`.
+If that file is missing, run one scripted Chicory boot first to dump it. The host
+selects generated user machines by the dumped executable SHA-256 because
+Chicory's generated `.meta` digest does not match the raw executable bytes.
 
 For out-of-tree or source-built artifacts, prefer environment variables because
 JMH forks benchmark JVMs:

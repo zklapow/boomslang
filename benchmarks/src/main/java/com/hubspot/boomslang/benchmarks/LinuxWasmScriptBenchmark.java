@@ -67,6 +67,16 @@ public class LinuxWasmScriptBenchmark {
   @Param({ "com.hubspot.boomslang.benchmarks.compiled.JoelLinuxWasmMachine" })
   public String aotMachineClass;
 
+  @Param({ "" })
+  public String aotUserModuleClasses;
+
+  @Param(
+    {
+      "3d0d16c37d4581390f58f29854419607b21aef216794ee5bea2278914544cf1d=com.hubspot.boomslang.benchmarks.compiled.JoelUserWasm",
+    }
+  )
+  public String aotUserModuleSha256Classes;
+
   @Setup(Level.Trial)
   public void setup() throws IOException {
     repoRoot = findRepoRoot();
@@ -80,6 +90,20 @@ public class LinuxWasmScriptBenchmark {
     );
     if (configuredAotMachineClass != null) {
       aotMachineClass = configuredAotMachineClass;
+    }
+    String configuredAotUserModuleClasses = configuredValue(
+      "linux.wasm.bench.aotUserModuleClasses",
+      "LINUX_WASM_BENCH_AOT_USER_MODULE_CLASSES"
+    );
+    if (configuredAotUserModuleClasses != null) {
+      aotUserModuleClasses = configuredAotUserModuleClasses;
+    }
+    String configuredAotUserModuleSha256Classes = configuredValue(
+      "linux.wasm.bench.aotUserModuleSha256Classes",
+      "LINUX_WASM_BENCH_AOT_USER_MODULE_SHA256_CLASSES"
+    );
+    if (configuredAotUserModuleSha256Classes != null) {
+      aotUserModuleSha256Classes = configuredAotUserModuleSha256Classes;
     }
     childClasspath = compileProbe(repoRoot);
   }
@@ -156,6 +180,10 @@ public class LinuxWasmScriptBenchmark {
     command.add(compilerFallback);
     command.add("--aot-machine-class");
     command.add(aotMachineClass);
+    command.add("--aot-user-module-classes");
+    command.add(aotUserModuleClasses);
+    command.add("--aot-user-module-sha256-classes");
+    command.add(aotUserModuleSha256Classes);
 
     Process process = new ProcessBuilder(command)
       .directory(repoRoot.toFile())
@@ -321,6 +349,8 @@ public class LinuxWasmScriptBenchmark {
     addForkedJvmProperty(properties, "linux.wasm.bench.initrd");
     addForkedJvmProperty(properties, "linux.wasm.bench.timeoutSeconds");
     addForkedJvmProperty(properties, "linux.wasm.bench.aotMachineClass");
+    addForkedJvmProperty(properties, "linux.wasm.bench.aotUserModuleClasses");
+    addForkedJvmProperty(properties, "linux.wasm.bench.aotUserModuleSha256Classes");
     return properties.toArray(String[]::new);
   }
 

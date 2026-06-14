@@ -84,6 +84,8 @@
       <properties>
         <linux.wasm.aot.wasmFile>${project.basedir}/../spikes/linux-wasm/build/joel-demo/vmlinux.stripped.wasm</linux.wasm.aot.wasmFile>
         <linux.wasm.aot.className>com.hubspot.boomslang.benchmarks.compiled.JoelLinuxWasm</linux.wasm.aot.className>
+        <linux.wasm.aot.userWasmFile>${project.basedir}/../spikes/linux-wasm/build/joel-demo/user-executables/01-task_swapper_0_0x2b3a80_.wasm</linux.wasm.aot.userWasmFile>
+        <linux.wasm.aot.userClassName>com.hubspot.boomslang.benchmarks.compiled.JoelUserWasm</linux.wasm.aot.userClassName>
       </properties>
       <build>
         <plugins>
@@ -99,6 +101,20 @@
                 <configuration>
                   <wasmFile>${linux.wasm.aot.wasmFile}</wasmFile>
                   <name>${linux.wasm.aot.className}</name>
+                  <interpreterFallback>WARN</interpreterFallback>
+                  <targetSourceFolder>${project.build.directory}/generated-sources/annotations</targetSourceFolder>
+                  <targetClassFolder>${project.build.outputDirectory}</targetClassFolder>
+                  <targetWasmFolder>${project.build.outputDirectory}</targetWasmFolder>
+                </configuration>
+              </execution>
+              <execution>
+                <id>compile-linux-wasm-user</id>
+                <goals>
+                  <goal>compile</goal>
+                </goals>
+                <configuration>
+                  <wasmFile>${linux.wasm.aot.userWasmFile}</wasmFile>
+                  <name>${linux.wasm.aot.userClassName}</name>
                   <interpreterFallback>WARN</interpreterFallback>
                   <targetSourceFolder>${project.build.directory}/generated-sources/annotations</targetSourceFolder>
                   <targetClassFolder>${project.build.outputDirectory}</targetClassFolder>

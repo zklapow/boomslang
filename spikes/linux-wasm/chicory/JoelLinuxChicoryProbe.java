@@ -1,6 +1,7 @@
 import com.dylibso.chicory.compiler.InterpreterFallback;
 import com.dylibso.chicory.compiler.MachineFactoryCompiler;
 import com.dylibso.chicory.runtime.ByteArrayMemory;
+import com.dylibso.chicory.runtime.CompiledModule;
 import com.dylibso.chicory.runtime.GlobalInstance;
 import com.dylibso.chicory.runtime.HostFunction;
 import com.dylibso.chicory.runtime.ImportGlobal;
@@ -30,11 +31,15 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
@@ -55,12 +60,16 @@ public final class JoelLinuxChicoryProbe {
   private final Engine engine;
   private final InterpreterFallback compilerFallback;
   private final String aotMachineClass;
+  private final List<String> aotUserModuleClasses;
+  private final Map<String, String> aotUserModuleClassesBySha256;
   private final SecureRandom random = new SecureRandom();
   private final Object schedulerLock = new Object();
   private final StringBuilder consoleOutput = new StringBuilder();
   private final Map<Long, Runner> runnersByTask = new LinkedHashMap<>();
   private final IdentityHashMap<Instance, Runner> runnersByInstance = new IdentityHashMap<>();
   private final Map<String, Function<Instance, Machine>> machineFactoriesByDigest = new LinkedHashMap<>();
+  private final Map<String, Function<Instance, Machine>> aotUserMachineFactoriesByDigest = new LinkedHashMap<>();
+  private final Map<String, Function<Instance, Machine>> aotUserMachineFactoriesBySha256 = new LinkedHashMap<>();
   private final Path executableDumpDir = Path.of(
     "spikes/linux-wasm/build/joel-demo/user-executables"
   );
@@ -82,6 +91,8 @@ public final class JoelLinuxChicoryProbe {
     this.engine = args.engine;
     this.compilerFallback = args.compilerFallback;
     this.aotMachineClass = args.aotMachineClass;
+    this.aotUserModuleClasses = args.aotUserModuleClasses;
+    this.aotUserModuleClassesBySha256 = args.aotUserModuleClassesBySha256;
   }
 
   public static void main(String[] argv) throws Exception {
@@ -104,7 +115,8 @@ public final class JoelLinuxChicoryProbe {
       " types=" +
       module.typeSection().typeCount()
     );
-    vmlinuxMachineFactory = machineFactoryFor("vmlinux", module, true);
+    vmlinuxMachineFactory = machineFactoryFor("vmlinux", module, true, null);
+    loadAotUserMachineFactories();
 
     Store store = new Store();
     int functionImports = 0;
@@ -190,14 +202,32 @@ public final class JoelLinuxChicoryProbe {
   private Function<Instance, Machine> machineFactoryFor(
     String label,
     WasmModule wasmModule,
-    boolean kernelModule
+    boolean kernelModule,
+    String moduleSha256
   ) {
     if (engine == Engine.INTERPRETER) {
       return null;
     }
     if (engine == Engine.AOT) {
       if (!kernelModule) {
-        return null;
+        Function<Instance, Machine> factory = moduleSha256 == null
+          ? null
+          : aotUserMachineFactoriesBySha256.get(moduleSha256);
+        if (factory == null) {
+          factory = aotUserMachineFactoriesByDigest.get(wasmModule.digest());
+        }
+        if (factory == null) {
+          log(
+            "missing AOT user machine for " +
+            label +
+            " sha256=" +
+            moduleSha256 +
+            ", falling back to interpreter"
+          );
+        } else {
+          log("using AOT user machine for " + label + " sha256=" + moduleSha256);
+        }
+        return factory;
       }
       return loadAotMachineFactory();
     }
@@ -255,6 +285,44 @@ public final class JoelLinuxChicoryProbe {
       );
     } catch (ReflectiveOperationException e) {
       throw new IllegalStateException("Failed to load AOT machine class " + aotMachineClass, e);
+    }
+  }
+
+  private void loadAotUserMachineFactories() {
+    if (engine != Engine.AOT) {
+      return;
+    }
+
+    for (String className : aotUserModuleClasses) {
+      CompiledModule compiledModule = loadCompiledModule(className);
+      String digest = compiledModule.wasmModule().digest();
+      aotUserMachineFactoriesByDigest.put(digest, compiledModule.machineFactory());
+      log("loaded AOT user module " + className + " digest=" + digest);
+    }
+
+    for (var entry : aotUserModuleClassesBySha256.entrySet()) {
+      CompiledModule compiledModule = loadCompiledModule(entry.getValue());
+      aotUserMachineFactoriesBySha256.put(
+        entry.getKey().toLowerCase(Locale.ROOT),
+        compiledModule.machineFactory()
+      );
+      log("loaded AOT user module " + entry.getValue() + " sha256=" + entry.getKey());
+    }
+  }
+
+  private CompiledModule loadCompiledModule(String className) {
+    try {
+      Class<?> moduleClass = Class.forName(className);
+      return (CompiledModule) moduleClass.getConstructor().newInstance();
+    } catch (ClassNotFoundException e) {
+      throw new IllegalStateException(
+        "AOT user module class not found: " +
+        className +
+        ". Build benchmarks with -Dlinux.wasm.aot=true after dumping user executables.",
+        e
+      );
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalStateException("Failed to load AOT user module " + className, e);
     }
   }
 
@@ -699,11 +767,13 @@ public final class JoelLinuxChicoryProbe {
         Math.toIntExact(executable.binStart),
         Math.toIntExact(executable.binEnd - executable.binStart)
       );
+      String executableSha256 = sha256Hex(executableBytes);
       WasmModule userModule = Parser.parse(executableBytes);
       Function<Instance, Machine> userMachineFactory = machineFactoryFor(
         "user " + runner.name,
         userModule,
-        false
+        false,
+        executableSha256
       );
       Instance userInstance = instantiateUserExecutable(
         runner,
@@ -882,6 +952,19 @@ public final class JoelLinuxChicoryProbe {
     return null;
   }
 
+  private String sha256Hex(byte[] bytes) {
+    try {
+      byte[] digest = MessageDigest.getInstance("SHA-256").digest(bytes);
+      StringBuilder hex = new StringBuilder(digest.length * 2);
+      for (byte b : digest) {
+        hex.append(String.format("%02x", b & 0xff));
+      }
+      return hex.toString();
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 digest is unavailable", e);
+    }
+  }
+
   private void dumpExecutable(Runner runner, Executable executable) {
     int start = Math.toIntExact(executable.binStart);
     int length = Math.toIntExact(executable.binEnd - executable.binStart);
@@ -988,6 +1071,11 @@ public final class JoelLinuxChicoryProbe {
     private InterpreterFallback compilerFallback = InterpreterFallback.WARN;
     private String aotMachineClass =
       "com.hubspot.boomslang.benchmarks.compiled.JoelLinuxWasmMachine";
+    private List<String> aotUserModuleClasses = List.of();
+    private Map<String, String> aotUserModuleClassesBySha256 = Map.of(
+      "3d0d16c37d4581390f58f29854419607b21aef216794ee5bea2278914544cf1d",
+      "com.hubspot.boomslang.benchmarks.compiled.JoelUserWasm"
+    );
 
     private static Args parse(String[] argv) {
       Args args = new Args();
@@ -1006,6 +1094,10 @@ public final class JoelLinuxChicoryProbe {
             parseCompilerFallback(requireValue(argv, ++i, "--compiler-fallback"));
           case "--aot-machine-class" -> args.aotMachineClass =
             requireValue(argv, ++i, "--aot-machine-class");
+          case "--aot-user-module-classes" -> args.aotUserModuleClasses =
+            parseClassList(requireValue(argv, ++i, "--aot-user-module-classes"));
+          case "--aot-user-module-sha256-classes" -> args.aotUserModuleClassesBySha256 =
+            parseSha256ClassMap(requireValue(argv, ++i, "--aot-user-module-sha256-classes"));
           case "--help" -> {
             usage();
             System.exit(0);
@@ -1027,6 +1119,46 @@ public final class JoelLinuxChicoryProbe {
           e
         );
       }
+    }
+
+    private static List<String> parseClassList(String value) {
+      if (value.isBlank()) {
+        return List.of();
+      }
+
+      List<String> classes = new ArrayList<>();
+      for (String className : value.split(",")) {
+        String trimmed = className.trim();
+        if (!trimmed.isEmpty()) {
+          classes.add(trimmed);
+        }
+      }
+      return List.copyOf(classes);
+    }
+
+    private static Map<String, String> parseSha256ClassMap(String value) {
+      if (value.isBlank()) {
+        return Map.of();
+      }
+
+      Map<String, String> classes = new LinkedHashMap<>();
+      for (String item : value.split(",")) {
+        String trimmed = item.trim();
+        if (trimmed.isEmpty()) {
+          continue;
+        }
+        int separator = trimmed.indexOf('=');
+        if (separator <= 0 || separator == trimmed.length() - 1) {
+          throw new IllegalArgumentException(
+            "--aot-user-module-sha256-classes expects SHA256=className entries"
+          );
+        }
+        classes.put(
+          trimmed.substring(0, separator).toLowerCase(Locale.ROOT),
+          trimmed.substring(separator + 1)
+        );
+      }
+      return Map.copyOf(classes);
     }
 
     private static String requireValue(String[] argv, int index, String flag) {
@@ -1057,7 +1189,11 @@ public final class JoelLinuxChicoryProbe {
         "  --compiler-fallback NAME",
         "                       silent, warn, or fail, default warn",
         "  --aot-machine-class NAME",
-        "                       generated vmlinux Machine class for --engine aot"
+        "                       generated vmlinux Machine class for --engine aot",
+        "  --aot-user-module-classes NAMES",
+        "                       comma-separated generated user CompiledModule classes",
+        "  --aot-user-module-sha256-classes ENTRIES",
+        "                       comma-separated SHA256=CompiledModule class entries"
       );
     }
   }
